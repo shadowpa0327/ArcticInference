@@ -19,6 +19,7 @@
 #include <nanobind/stl/vector.h>
 
 #include "suffix_tree.h"
+#include "suffix_forest.h"
 
 namespace nb = nanobind;
 
@@ -76,6 +77,124 @@ Draft speculate_vector(SuffixTree& tree,
 }
 
 
+// SuffixForest wrapper functions
+
+void batch_extend_forest(
+    SuffixForest& forest,
+    const std::vector<int>& tree_indices,
+    const std::vector<int>& seq_ids,
+    const std::vector<std::vector<int32_t>>& token_batches) {
+
+    // Release GIL for parallel execution
+    nb::gil_scoped_release release;
+
+    forest.batch_extend(
+        std::span<const int>(tree_indices),
+        std::span<const int>(seq_ids),
+        token_batches);
+}
+
+void batch_extend_forest_ndarray(
+    SuffixForest& forest,
+    const Int32Array1D& tree_indices,
+    const Int32Array1D& seq_ids,
+    nb::list token_batches_list) {
+
+    // Convert tree_indices ndarray to vector
+    std::vector<int> tree_indices_vec(tree_indices.size());
+    for (size_t i = 0; i < tree_indices.size(); ++i) {
+        tree_indices_vec[i] = tree_indices.data()[i];
+    }
+
+    // Convert seq_ids ndarray to vector
+    std::vector<int> seq_ids_vec(seq_ids.size());
+    for (size_t i = 0; i < seq_ids.size(); ++i) {
+        seq_ids_vec[i] = seq_ids.data()[i];
+    }
+
+    // Convert token_batches list of ndarrays to vector of vectors
+    std::vector<std::vector<int32_t>> token_batches_vec;
+    token_batches_vec.reserve(token_batches_list.size());
+
+    for (size_t i = 0; i < token_batches_list.size(); ++i) {
+        nb::handle tokens_handle = token_batches_list[i];
+        Int32Array1D tokens = nb::cast<Int32Array1D>(tokens_handle);
+        token_batches_vec.emplace_back(tokens.data(), tokens.data() + tokens.size());
+    }
+
+    // Release GIL for parallel execution
+    nb::gil_scoped_release release;
+
+    forest.batch_extend(
+        std::span<const int>(tree_indices_vec),
+        std::span<const int>(seq_ids_vec),
+        token_batches_vec);
+}
+
+std::vector<Draft> batch_speculate_forest(
+    SuffixForest& forest,
+    const std::vector<int>& tree_indices,
+    const std::vector<std::vector<int32_t>>& contexts,
+    int max_spec_tokens,
+    float max_spec_factor,
+    float max_spec_offset,
+    float min_token_prob,
+    bool use_tree_spec) {
+
+    // Release GIL for parallel execution
+    nb::gil_scoped_release release;
+
+    return forest.batch_speculate(
+        std::span<const int>(tree_indices),
+        contexts,
+        max_spec_tokens,
+        max_spec_factor,
+        max_spec_offset,
+        min_token_prob,
+        use_tree_spec);
+}
+
+
+std::vector<Draft> batch_speculate_forest_ndarray(
+    SuffixForest& forest,
+    const Int32Array1D& tree_indices,
+    nb::list contexts_list,
+    int max_spec_tokens,
+    float max_spec_factor,
+    float max_spec_offset,
+    float min_token_prob,
+    bool use_tree_spec) {
+
+    // Convert tree_indices ndarray to vector
+    std::vector<int> tree_indices_vec(tree_indices.size());
+    for (size_t i = 0; i < tree_indices.size(); ++i) {
+        tree_indices_vec[i] = tree_indices.data()[i];
+    }
+
+    // Convert contexts list of ndarrays to vector of vectors
+    std::vector<std::vector<int32_t>> contexts_vec;
+    contexts_vec.reserve(contexts_list.size());
+
+    for (size_t i = 0; i < contexts_list.size(); ++i) {
+        nb::handle ctx_handle = contexts_list[i];
+        Int32Array1D ctx = nb::cast<Int32Array1D>(ctx_handle);
+        contexts_vec.emplace_back(ctx.data(), ctx.data() + ctx.size());
+    }
+
+    // Release GIL for parallel execution
+    nb::gil_scoped_release release;
+
+    return forest.batch_speculate(
+        std::span<const int>(tree_indices_vec),
+        contexts_vec,
+        max_spec_tokens,
+        max_spec_factor,
+        max_spec_offset,
+        min_token_prob,
+        use_tree_spec);
+}
+
+
 NB_MODULE(_C, m) {
     nb::set_leak_warnings(false);
 
@@ -100,4 +219,63 @@ NB_MODULE(_C, m) {
         // Debugging methods, not meant to be used in critical loop.
         .def("check_integrity", &SuffixTree::check_integrity)
         .def("estimate_memory", &SuffixTree::estimate_memory);
+
+    nb::class_<SuffixForest>(m, "SuffixForest")
+        .def(nb::init<int, int, int>(),
+             nb::arg("max_depth"),
+             nb::arg("num_threads") = -1,
+             nb::arg("parallel_threshold") = 4,
+             "Create a SuffixForest with configurable parallelization settings.\n\n"
+             "Args:\n"
+             "    max_depth: Maximum depth for all trees in the forest\n"
+             "    num_threads: Number of threads (-1=auto, 0=sequential, >0=explicit)\n"
+             "    parallel_threshold: Minimum batch size to trigger parallelization")
+        .def("create_tree", &SuffixForest::create_tree,
+             "Create a new tree in the forest and return its index")
+        .def("remove_tree", &SuffixForest::remove_tree,
+             nb::arg("tree_index"),
+             "Remove a tree from the forest")
+        .def("get_tree", nb::overload_cast<int>(&SuffixForest::get_tree),
+             nb::arg("tree_index"),
+             nb::rv_policy::reference_internal,
+             "Get a reference to a tree in the forest")
+        .def("has_tree", &SuffixForest::has_tree,
+             nb::arg("tree_index"),
+             "Check if a tree exists in the forest")
+        .def("num_trees", &SuffixForest::num_trees,
+             "Get the number of trees currently in the forest")
+        .def("get_num_threads", &SuffixForest::get_num_threads,
+             "Get the configured number of threads")
+        .def("get_parallel_threshold", &SuffixForest::get_parallel_threshold,
+             "Get the parallel threshold")
+        // Batch extend methods
+        .def("batch_extend", &batch_extend_forest,
+             nb::arg("tree_indices"),
+             nb::arg("seq_ids"),
+             nb::arg("token_batches"),
+             "Batch extend multiple trees with new tokens in parallel")
+        .def("batch_extend_ndarray", &batch_extend_forest_ndarray,
+             nb::arg("tree_indices"),
+             nb::arg("seq_ids"),
+             nb::arg("token_batches"),
+             "Batch extend multiple trees with new tokens (ndarray version)")
+        // Batch speculation methods
+        .def("batch_speculate", &batch_speculate_forest,
+             nb::arg("tree_indices"),
+             nb::arg("contexts"),
+             nb::arg("max_spec_tokens"),
+             nb::arg("max_spec_factor"),
+             nb::arg("max_spec_offset"),
+             nb::arg("min_token_prob"),
+             nb::arg("use_tree_spec"),
+             "Perform batched parallel speculation across multiple trees")
+        .def("batch_speculate_ndarray", &batch_speculate_forest_ndarray,
+             nb::arg("tree_indices"),
+             nb::arg("contexts"),
+             nb::arg("max_spec_tokens"),
+             nb::arg("max_spec_factor"),
+             nb::arg("max_spec_offset"),
+             nb::arg("min_token_prob"),
+             nb::arg("use_tree_spec"),
+             "Perform batched parallel speculation with ndarray inputs");
 }

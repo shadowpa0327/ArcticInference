@@ -15,4 +15,10 @@
 
 from .cache import SuffixDecodingCache, SuffixDecodingDraft
 
-__all__ = ["SuffixDecodingCache", "SuffixDecodingDraft"]
+# Try to import ParallelSuffixDecodingCache - requires SuffixForest C++ extension
+try:
+    from .parallel_cache import ParallelSuffixDecodingCache
+    __all__ = ["SuffixDecodingCache", "SuffixDecodingDraft", "ParallelSuffixDecodingCache"]
+except ImportError:
+    # SuffixForest not available (C++ extension not built)
+    __all__ = ["SuffixDecodingCache", "SuffixDecodingDraft"]

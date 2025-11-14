@@ -35,4 +35,15 @@ execute_process(
 
 find_package(nanobind CONFIG REQUIRED)
 
-nanobind_add_module(_C NOMINSIZE bindings.cc suffix_tree.cc)
+# Find OpenMP for parallel speculation (optional but recommended)
+find_package(OpenMP)
+
+nanobind_add_module(_C NOMINSIZE bindings.cc suffix_tree.cc suffix_forest.cc)
+
+# Link OpenMP if available
+if(OpenMP_CXX_FOUND)
+    target_link_libraries(_C PRIVATE OpenMP::OpenMP_CXX)
+    message(STATUS "OpenMP found - parallel speculation enabled")
+else()
+    message(WARNING "OpenMP not found - parallel speculation will fall back to sequential execution")
+endif()
