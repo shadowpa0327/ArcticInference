@@ -13,10 +13,15 @@ try:
         SuffixDecodingCache,
         ParallelSuffixDecodingCache
     )
-    print("✓ Successfully imported both cache implementations")
+    from arctic_inference.suffix_decoding.client import SuffixDecodingClient
+    print("✓ Successfully imported cache implementations and client")
 except ImportError as e:
     print(f"✗ Failed to import: {e}")
     sys.exit(1)
+
+import subprocess
+import time
+import os
 
 def create_test_data(num_requests=10):
     """Create test data for multiple requests."""
@@ -319,6 +324,113 @@ def test_stats():
 
     print("✓ Statistics test passed!")
 
+def test_server_correctness():
+    """
+    Test that the SuffixDecodingServer produces identical results to the local caches.
+    """
+    print("\n=== Test 6: Server Correctness ===")
+
+    # Start the server in a subprocess
+    print("Starting server...")
+    server_process = subprocess.Popen(
+        [sys.executable, "arctic_inference/suffix_decoding/server.py", "--port", "50053"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        cwd=os.getcwd()
+    )
+    # Wait for server to start
+    time.sleep(2)
+
+    try:
+        # Initialize client
+        client = SuffixDecodingClient(port=50053)
+        
+        # Initialize local caches
+        original_cache = SuffixDecodingCache(max_tree_depth=64, max_cached_requests=0)
+        parallel_cache = ParallelSuffixDecodingCache(max_tree_depth=64, num_threads=4)
+
+        # Create test data
+        num_requests = 5
+        test_data = create_test_data(num_requests)
+
+        # Initialize all systems
+        for data in test_data:
+            # Original
+            original_cache.start_request(data['req_id'], data['prompt'])
+            for tokens in data['generated']:
+                original_cache.add_active_response(data['req_id'], tokens)
+            
+            # Parallel
+            parallel_cache.start_request(data['req_id'], data['prompt'])
+            for tokens in data['generated']:
+                parallel_cache.add_tokens(data['req_id'], tokens)
+                
+            # Server (via client)
+            client.start_request(data['req_id'], data['prompt'])
+            for tokens in data['generated']:
+                client.add_tokens(data['req_id'], tokens)
+
+        print(f"✓ Initialized all systems with {num_requests} requests")
+
+        # Compare speculation results
+        mismatches = 0
+        for data in test_data:
+            req_id = data['req_id']
+            context = data['context']
+
+            # Get drafts
+            draft_orig = original_cache.speculate(req_id, context, max_spec_tokens=5)
+            draft_para = parallel_cache.speculate(req_id, context, max_spec_tokens=5)
+            draft_serv = client.speculate(req_id, context, max_spec_tokens=5)
+
+            # Compare
+            if not (draft_orig.token_ids == draft_para.token_ids == draft_serv.token_ids):
+                print(f"  ✗ Mismatch for {req_id}:")
+                print(f"    Original: {draft_orig.token_ids}")
+                print(f"    Parallel: {draft_para.token_ids}")
+                print(f"    Server:   {draft_serv.token_ids}")
+                mismatches += 1
+            elif not (abs(draft_orig.score - draft_para.score) < 0.001 and 
+                      abs(draft_para.score - draft_serv.score) < 0.001):
+                print(f"  ✗ Score mismatch for {req_id}:")
+                print(f"    Original: {draft_orig.score:.6f}")
+                print(f"    Parallel: {draft_para.score:.6f}")
+                print(f"    Server:   {draft_serv.score:.6f}")
+                mismatches += 1
+
+        if mismatches == 0:
+            print(f"✓ Server produced identical results to local caches!")
+        else:
+            print(f"✗ Found {mismatches} mismatches involving server")
+            raise RuntimeError("Server correctness check failed")
+
+        # Test batch speculation on server
+        req_ids = [d['req_id'] for d in test_data]
+        contexts = [d['context'] for d in test_data]
+        
+        drafts_serv = client.batch_speculate(req_ids, contexts, max_spec_tokens=5)
+        
+        batch_mismatches = 0
+        for i, (data, draft_s) in enumerate(zip(test_data, drafts_serv)):
+            draft_o = original_cache.speculate(data['req_id'], data['context'], max_spec_tokens=5)
+            if draft_o.token_ids != draft_s.token_ids:
+                print(f"  ✗ Batch mismatch at index {i}")
+                batch_mismatches += 1
+        
+        if batch_mismatches == 0:
+            print(f"✓ Server batch speculation produced identical results!")
+        else:
+            print(f"✗ Found {batch_mismatches} server batch mismatches")
+            raise RuntimeError("Server batch correctness check failed")
+
+    finally:
+        # Cleanup
+        if 'client' in locals():
+            client.close()
+        server_process.terminate()
+        server_process.wait()
+        print("✓ Server stopped")
+
 if __name__ == "__main__":
     print("="*70)
     print("ParallelSuffixDecodingCache Test Suite")
@@ -330,6 +442,7 @@ if __name__ == "__main__":
         test_correctness_vs_original()
         test_batch_add_tokens()
         test_stats()
+        test_server_correctness()
 
         print("\n" + "="*70)
         print("ALL TESTS PASSED! ✓")

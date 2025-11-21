@@ -1,0 +1,93 @@
+syntax = "proto3";
+
+package arctic_inference.suffix_decoding;
+
+service SuffixDecodingService {
+  // Start a new request
+  rpc StartRequest (StartRequestMsg) returns (Empty) {}
+
+  // Stop a request
+  rpc StopRequest (StopRequestMsg) returns (Empty) {}
+
+  // Add tokens to a request
+  rpc AddTokens (AddTokensMsg) returns (Empty) {}
+
+  // Add tokens to multiple requests
+  rpc BatchAddTokens (BatchAddTokensMsg) returns (Empty) {}
+
+  // Speculate for a single request
+  rpc Speculate (SpeculateMsg) returns (SpeculateResponse) {}
+
+  // Speculate for multiple requests
+  rpc BatchSpeculate (BatchSpeculateMsg) returns (BatchSpeculateResponse) {}
+
+  // Get cache statistics
+  rpc GetStats (Empty) returns (StatsResponse) {}
+}
+
+message Empty {}
+
+message StartRequestMsg {
+  string req_id = 1;
+  repeated int32 prompt_token_ids = 2;
+}
+
+message StopRequestMsg {
+  string req_id = 1;
+}
+
+message AddTokensMsg {
+  string req_id = 1;
+  repeated int32 token_ids = 2;
+}
+
+message BatchAddTokensMsg {
+  repeated string req_ids = 1;
+  // Flattened list of tokens or list of lists? Proto doesn't support list of lists directly.
+  // We can use a repeated message wrapper.
+  repeated TokenSequence token_batches = 2;
+}
+
+message TokenSequence {
+  repeated int32 tokens = 1;
+}
+
+message SpeculateMsg {
+  string req_id = 1;
+  repeated int32 context = 2;
+  optional int32 max_spec_tokens = 3;
+  float max_spec_factor = 4;
+  float max_spec_offset = 5;
+  float min_token_prob = 6;
+  bool use_tree_spec = 7;
+}
+
+message BatchSpeculateMsg {
+  repeated string req_ids = 1;
+  repeated TokenSequence contexts = 2;
+  optional int32 max_spec_tokens = 3;
+  float max_spec_factor = 4;
+  float max_spec_offset = 5;
+  float min_token_prob = 6;
+  bool use_tree_spec = 7;
+}
+
+message SpeculateResponse {
+  repeated int32 token_ids = 1;
+  repeated int32 parents = 2;
+  repeated float probs = 3;
+  float score = 4;
+  int32 match_len = 5;
+}
+
+message BatchSpeculateResponse {
+  repeated SpeculateResponse drafts = 1;
+}
+
+message StatsResponse {
+  int32 num_active_requests = 1;
+  int32 max_tree_depth = 2;
+  int32 num_threads = 3;
+  int32 parallel_threshold = 4;
+  int32 num_trees_in_forest = 5;
+}
