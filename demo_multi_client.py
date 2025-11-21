@@ -16,18 +16,36 @@ def run_client(client_id, num_requests, port):
         req_id = f"client_{client_id}_req_{i}"
         prompt = [1, 2, 3, client_id, i]
         
+        # Track the full sequence for verification
+        full_sequence = list(prompt)
+        
         try:
             # 1. Start
             client.start_request(req_id, prompt)
             
             # 2. Add tokens (simulate generation)
-            for _ in range(3):
+            # Use deterministic tokens for verification
+            for step in range(3):
                 time.sleep(random.uniform(0.01, 0.05)) # Simulate work
-                client.add_tokens(req_id, [random.randint(0, 100)])
+                # Deterministic token: client_id * 1000 + i * 100 + step
+                new_token = client_id * 1000 + i * 100 + step
+                client.add_tokens(req_id, [new_token])
+                full_sequence.append(new_token)
             
             # 3. Speculate
-            draft = client.speculate(req_id, [1, 2, 3])
+            # Use the prompt as context, should return all added tokens
+            draft = client.speculate(req_id, prompt)
             
+            # Verification
+            expected_tokens = full_sequence[len(prompt):]
+            if draft.token_ids != expected_tokens:
+                print(f"[Client {client_id}] VERIFICATION FAILED for {req_id}")
+                print(f"  Expected: {expected_tokens}")
+                print(f"  Got:      {draft.token_ids}")
+            else:
+                # print(f"[Client {client_id}] Verified {req_id}")
+                pass
+
             # 4. Stop
             client.stop_request(req_id)
             

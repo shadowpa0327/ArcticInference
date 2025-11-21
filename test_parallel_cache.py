@@ -431,6 +431,197 @@ def test_server_correctness():
         server_process.wait()
         print("✓ Server stopped")
 
+def test_server_robustness():
+    """
+    Test error handling and edge cases for the server.
+    """
+    print("\n=== Test 7: Server Robustness ===")
+
+    # Start the server in a subprocess
+    print("Starting server...")
+    server_process = subprocess.Popen(
+        [sys.executable, "arctic_inference/suffix_decoding/server.py", "--port", "50054"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        cwd=os.getcwd()
+    )
+    time.sleep(2)
+
+    try:
+        client = SuffixDecodingClient(port=50054)
+        req_id = "robust_req"
+        
+        # 1. Test stopping non-existent request
+        # Should not crash, but might log error or return empty
+        try:
+            client.stop_request("non_existent_req")
+            print("✓ Stopping non-existent request handled gracefully")
+        except Exception as e:
+            print(f"✗ Stopping non-existent request raised exception: {e}")
+
+        # 2. Test adding tokens to non-existent request
+        try:
+            client.add_tokens("non_existent_req", [1, 2, 3])
+            print("✗ Adding tokens to non-existent request should fail")
+        except Exception as e:
+            # gRPC usually raises RpcError
+            print(f"✓ Adding tokens to non-existent request failed as expected")
+
+        # 3. Test start -> stop -> add tokens (should fail)
+        client.start_request(req_id, [1, 2, 3])
+        client.stop_request(req_id)
+        try:
+            client.add_tokens(req_id, [4, 5])
+            print("✗ Adding tokens to stopped request should fail")
+        except Exception:
+            print(f"✓ Adding tokens to stopped request failed as expected")
+
+        # 4. Test empty token addition
+        client.start_request("empty_test", [1, 2, 3])
+        client.add_tokens("empty_test", [])
+        print("✓ Adding empty tokens handled")
+        
+        # 5. Test speculation with empty context
+        draft = client.speculate("empty_test", [])
+        print(f"✓ Speculation with empty context handled: {len(draft.token_ids)} tokens")
+        
+        client.stop_request("empty_test")
+
+    finally:
+        if 'client' in locals():
+            client.close()
+        server_process.terminate()
+        server_process.wait()
+        print("✓ Server stopped")
+
+def test_server_batch_add_tokens():
+    """
+    Test batch_add_tokens functionality via gRPC server.
+    """
+    print("\n=== Test 8: Server Batch Add Tokens ===")
+
+    # Start the server in a subprocess
+    print("Starting server...")
+    server_process = subprocess.Popen(
+        [sys.executable, "arctic_inference/suffix_decoding/server.py", "--port", "50055"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        cwd=os.getcwd()
+    )
+    time.sleep(2)
+
+    try:
+        client = SuffixDecodingClient(port=50055)
+        
+        # Start multiple requests
+        num_requests = 5
+        req_ids = []
+        for i in range(num_requests):
+            req_id = f"batch_req_{i}"
+            prompt = np.array([1, 2, 3, i], dtype=np.int32)
+            client.start_request(req_id, prompt)
+            req_ids.append(req_id)
+        
+        print(f"✓ Started {num_requests} requests")
+
+        # Add tokens to all requests in parallel
+        token_batches = [
+            np.array([i+10, i+20], dtype=np.int32) for i in range(num_requests)
+        ]
+
+        client.batch_add_tokens(req_ids, token_batches)
+        print(f"✓ Batch added tokens via server")
+
+        # Verify tokens were added by speculating
+        contexts = [np.array([1, 2, 3], dtype=np.int32) for _ in range(num_requests)]
+        drafts = client.batch_speculate(req_ids, contexts, max_spec_tokens=5)
+
+        assert len(drafts) == num_requests
+        print(f"✓ Speculation after batch add tokens succeeded")
+        
+        # Verify content of drafts (should reflect added tokens)
+        # We expect the added tokens to be part of the prefix match or affect speculation
+        # Since we don't have a ground truth here, we just check we got results.
+        # But to be sure, let's add another batch and check if it works.
+        
+        token_batches_2 = [
+            np.array([i+30], dtype=np.int32) for i in range(num_requests)
+        ]
+        client.batch_add_tokens(req_ids, token_batches_2)
+        print(f"✓ Second batch add tokens succeeded")
+
+    finally:
+        if 'client' in locals():
+            client.close()
+        server_process.terminate()
+        server_process.wait()
+        print("✓ Server stopped")
+
+def test_multi_client_same_request():
+    """
+    Test that multiple clients can interact with the same request on the server.
+    """
+    print("\n=== Test 9: Multi-Client Same Request ===")
+
+    # Start the server in a subprocess
+    print("Starting server...")
+    server_process = subprocess.Popen(
+        [sys.executable, "arctic_inference/suffix_decoding/server.py", "--port", "50056"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        cwd=os.getcwd()
+    )
+    time.sleep(2)
+
+    try:
+        # Client 1
+        client1 = SuffixDecodingClient(port=50056)
+        req_id = "shared_req"
+        prompt = np.array([1, 2, 3, 4, 5], dtype=np.int32)
+        
+        # Client 1 starts request
+        client1.start_request(req_id, prompt)
+        print("✓ Client 1 started request")
+        
+        # Client 1 adds tokens
+        tokens1 = np.array([6, 7, 8], dtype=np.int32)
+        client1.add_tokens(req_id, tokens1)
+        print("✓ Client 1 added tokens")
+        
+        # Client 2 (new connection)
+        client2 = SuffixDecodingClient(port=50056)
+        
+        # Client 2 adds more tokens to the SAME request
+        tokens2 = np.array([9, 10], dtype=np.int32)
+        client2.add_tokens(req_id, tokens2)
+        print("✓ Client 2 added tokens to same request")
+        
+        # Client 2 speculates
+        context = np.array([1, 2, 3], dtype=np.int32)
+        draft = client2.speculate(req_id, context, max_spec_tokens=5)
+        print(f"✓ Client 2 speculated: {len(draft.token_ids)} tokens")
+        
+        # Verify that Client 1 can also see the updates (by speculating)
+        draft1 = client1.speculate(req_id, context, max_spec_tokens=5)
+        print(f"✓ Client 1 speculated: {len(draft1.token_ids)} tokens")
+        
+        # They should get the same result
+        if np.array_equal(draft.token_ids, draft1.token_ids):
+             print("✓ Both clients see consistent state")
+        else:
+             print("✗ Clients see different state!")
+             print(f"  Client 1: {draft1.token_ids}")
+             print(f"  Client 2: {draft.token_ids}")
+             raise RuntimeError("Multi-client consistency check failed")
+
+        client1.close()
+        client2.close()
+
+    finally:
+        server_process.terminate()
+        server_process.wait()
+        print("✓ Server stopped")
+
 if __name__ == "__main__":
     print("="*70)
     print("ParallelSuffixDecodingCache Test Suite")
@@ -443,6 +634,9 @@ if __name__ == "__main__":
         test_batch_add_tokens()
         test_stats()
         test_server_correctness()
+        test_server_robustness()
+        test_server_batch_add_tokens()
+        test_multi_client_same_request()
 
         print("\n" + "="*70)
         print("ALL TESTS PASSED! ✓")
